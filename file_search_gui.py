@@ -1,11 +1,13 @@
 import os
 import re
-import csv
 import sys
+import csv
+import webbrowser
+import pandas as pd
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, font
 from datetime import datetime
-from pathlib import Path
+
 
 # Optional dependencies
 try:
@@ -56,7 +58,7 @@ class Tooltip:
 class FileSearchApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("📁 File Search Pro")
+        self.root.title("📁 Advanced File Search Pro")
         self.root.geometry("1100x800")
         self.root.configure(padx=15, pady=15)
 
@@ -65,12 +67,29 @@ class FileSearchApp:
         self.bold_font = font.Font(**self.default_font.config())
         self.mono_font = font.Font(family="Courier", size=10)
 
-        self.results = []  # Store full result objects for export/preview
+        # Icons (emoji-style fallback)
+        self.icons = {
+            'txt': '📄',
+            'pdf': '📕',
+            'docx': '📘',
+            'pptx': '📊',
+            'xlsx': '📈',
+            'csv': '📑',
+            'py': '🐍',
+            'js': '🟨',
+            'json': '🔧',
+            'md': '📝',
+            'jpg': '🖼️',
+            'png': '🖼️',
+            'default': '📎'
+        }
+
+        self.results = []
         self.create_widgets()
 
     def create_widgets(self):
         # === Title ===
-        title = ttk.Label(self.root, text="File Search Pro", font=("Helvetica", 16, "bold"))
+        title = ttk.Label(self.root, text="Advanced File Search Pro", font=("Helvetica", 16, "bold"))
         title.grid(row=0, column=0, columnspan=5, pady=(0, 15))
 
         # === Directory Selection ===
@@ -89,10 +108,10 @@ class FileSearchApp:
 
         # === Extensions ===
         ttk.Label(self.root, text="Extensions:").grid(row=3, column=0, sticky="w", pady=5)
-        self.ext_var = tk.StringVar()
+        self.ext_var = tk.StringVar(value="txt pdf docx pptx xlsx csv py js")
         ext_entry = ttk.Entry(self.root, textvariable=self.ext_var, width=50)
         ext_entry.grid(row=3, column=1, columnspan=3, padx=5, pady=5, sticky="ew")
-        Tooltip(ext_entry, "Filter by extensions: pdf docx txt pptx\nLeave empty to include all")
+        Tooltip(ext_entry, "Filter by extensions: pdf docx txt pptx xlsx csv py js\nLeave empty to include all")
 
         # === Options Frame ===
         options_frame = ttk.LabelFrame(self.root, text="Search Options", padding=10)
@@ -140,11 +159,13 @@ class FileSearchApp:
 
         # --- Left: Results Tree ---
         left_frame = ttk.Frame(paned)
-        columns = ("Name", "Size", "Modified")
+        columns = ("Icon", "Name", "Size", "Modified")
         self.tree = ttk.Treeview(left_frame, columns=columns, show="headings", height=20)
+        self.tree.heading("Icon", text="")
         self.tree.heading("Name", text="Name")
         self.tree.heading("Size", text="Size (KB)")
         self.tree.heading("Modified", text="Modified")
+        self.tree.column("Icon", width=30, anchor="center")
         self.tree.column("Name", width=250)
         self.tree.column("Size", width=100, anchor="center")
         self.tree.column("Modified", width=150, anchor="center")
@@ -154,11 +175,11 @@ class FileSearchApp:
         self.tree.pack(side="left", fill="both", expand=True)
         vsb1.pack(side="right", fill="y")
 
-        # Double-click to open
         self.tree.bind("<Double-1>", self.open_selected_file)
-
-        # Click to show preview
         self.tree.bind("<<TreeviewSelect>>", self.show_preview)
+        self.tree.bind("<Button-3>", self.show_context_menu)
+        if sys.platform == "darwin":
+            self.tree.bind("<Button-2>", self.show_context_menu)
 
         # --- Right: Preview Pane ---
         right_frame = ttk.Frame(paned)
@@ -169,9 +190,44 @@ class FileSearchApp:
         self.preview_text.configure(yscrollcommand=vsb2.set)
         vsb2.pack(side="right", fill="y")
 
-        # Add frames to paned window
         paned.add(left_frame, weight=3)
         paned.add(right_frame, weight=2)
+
+        # === Footer ===
+        footer_frame = ttk.Frame(self.root)
+        footer_frame.grid(row=7, column=0, columnspan=5, pady=10)
+
+        license_label = ttk.Label(footer_frame, text="License: MIT | Made with love: ", foreground="gray")
+        license_label.pack(side="left")
+
+        creator_label = tk.Label(footer_frame, text="Jhenbert", foreground="blue", cursor="hand2", font=("Helvetica", 9, "underline"))
+        creator_label.pack(side="left")
+        creator_label.bind("<Button-1>", lambda e: webbrowser.open("https://jhenbert.dev"))
+
+        copyright_label = ttk.Label(footer_frame, text=f" © {datetime.now().year}", foreground="gray")
+        copyright_label.pack(side="left")
+
+        # Create context menu
+        self.create_context_menu()
+
+    def create_context_menu(self):
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="📂 Open File", command=self.open_selected_file)
+        self.context_menu.add_command(label="📁 Open File Location", command=self.open_file_location)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="📋 Copy Path", command=self.copy_path_to_clipboard)
+
+    def show_context_menu(self, event):
+        item = self.tree.identify_row(event.y)
+        if item:
+            if not self.tree.selection() or item not in self.tree.selection():
+                self.tree.selection_set(item)
+        else:
+            return
+        try:
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.context_menu.grab_release()
 
     def browse_directory(self):
         path = filedialog.askdirectory(initialdir=self.directory_var.get())
@@ -179,7 +235,7 @@ class FileSearchApp:
             self.directory_var.set(path)
 
     def read_file_content(self, filepath):
-        """Extract text from supported file types."""
+        """Extract text from supported file types including .csv and .xlsx"""
         ext = os.path.splitext(filepath)[1].lower()
 
         try:
@@ -205,13 +261,30 @@ class FileSearchApp:
                 prs = Presentation(filepath)
                 return " ".join(shape.text for slide in prs.slides for shape in slide.shapes if hasattr(shape, "text"))
 
+            elif ext == '.csv':
+                text = ""
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        text += " ".join(row) + " "
+                return text
+
+            elif ext == '.xlsx':
+                try:
+                    df = pd.read_excel(filepath, sheet_name=None)  # All sheets
+                    text = ""
+                    for sheet_name, sheet_df in df.items():
+                        text += f"Sheet: {sheet_name} " + sheet_df.to_string() + " "
+                    return text
+                except Exception as e:
+                    return f"[Excel read error: {str(e)}]"
+
             else:
                 return f"[Unsupported format: {ext}]"
         except Exception as e:
             return f"[Error reading file: {str(e)}]"
 
     def matches_pattern(self, text, pattern, use_regex=False, case_sensitive=False):
-        """Check if text matches pattern (literal or regex)."""
         if use_regex:
             flags = 0 if case_sensitive else re.IGNORECASE
             try:
@@ -228,7 +301,6 @@ class FileSearchApp:
                 else any(k in text for k in keywords)
 
     def highlight_text(self, text, pattern, use_regex=False, case_sensitive=False):
-        """Return text with **markers** around matched parts."""
         if use_regex:
             flags = 0 if case_sensitive else re.IGNORECASE
             try:
@@ -238,7 +310,6 @@ class FileSearchApp:
         else:
             for kw in pattern.split():
                 if not case_sensitive:
-                    # Simple case-insensitive replace
                     text = re.sub(re.escape(kw), f"**{kw}**", text, flags=re.IGNORECASE)
                 else:
                     text = text.replace(kw, f"**{kw}**")
@@ -285,12 +356,10 @@ class FileSearchApp:
                 filename = file if case_sensitive else file.lower()
                 file_ext = os.path.splitext(file)[1][1:].lower()
 
-                # Extension filter
                 if extensions and file_ext not in ([e.lower() for e in extensions] if not case_sensitive else extensions):
                     scanned += 1
                     continue
 
-                # Filename match
                 name_match = self.matches_pattern(filename, pattern, use_regex, case_sensitive)
 
                 content_match = False
@@ -301,22 +370,24 @@ class FileSearchApp:
                     pattern_for_search = pattern if case_sensitive or use_regex else pattern.lower()
                     content_match = self.matches_pattern(content_for_search, pattern_for_search, use_regex, case_sensitive)
                     if content_match:
-                        # Extract snippet
-                        pos = content.lower().find(pattern.lower())
-                        start = max(0, pos - 50)
-                        end = min(len(content), pos + 100)
-                        content_snippet = content[start:end].strip()
+                        pos = max(0, content.lower().find(pattern.lower()) - 50)
+                        end = min(len(content), pos + 150)
+                        content_snippet = content[pos:end].strip()
 
                 if (search_content and content_match) or (not search_content and name_match):
-                    stat = os.stat(filepath)
-                    result = {
-                        'name': file,
-                        'path': filepath,
-                        'size': stat.st_size,
-                        'mtime': stat.st_mtime,
-                        'snippet': content_snippet
-                    }
-                    self.results.append(result)
+                    try:
+                        stat = os.stat(filepath)
+                        result = {
+                            'name': file,
+                            'path': filepath,
+                            'size': stat.st_size,
+                            'mtime': stat.st_mtime,
+                            'snippet': content_snippet,
+                            'ext': file_ext
+                        }
+                        self.results.append(result)
+                    except:
+                        pass
 
                 scanned += 1
                 self.progress_var.set((scanned / total_files) * 100)
@@ -324,7 +395,6 @@ class FileSearchApp:
                 if scanned % 20 == 0:
                     self.root.update_idletasks()
 
-        # Sort
         if sort_by == "name":
             self.results.sort(key=lambda x: x['name'].lower())
         elif sort_by == "date":
@@ -332,20 +402,19 @@ class FileSearchApp:
         elif sort_by == "size":
             self.results.sort(key=lambda x: x['size'], reverse=True)
 
-        # Insert into tree
         for r in self.results:
             size_kb = r['size'] // 1024
             date_str = datetime.fromtimestamp(r['mtime']).strftime("%Y-%m-%d %H:%M")
+            icon = self.icons.get(r['ext'], self.icons['default'])
             highlighted_name = self.highlight_text(r['name'], pattern, use_regex, case_sensitive)
-            self.tree.insert("", "end", values=(highlighted_name, size_kb, date_str), tags=(r['path'],))
+            self.tree.insert("", "end", values=(icon, highlighted_name, size_kb, date_str), tags=(r['path'],))
 
         self.progress_var.set(100)
         self.export_btn.config(state="normal")
         self.search_btn.config(state="normal")
-
         messagebox.showinfo("Done", f"Found {len(self.results)} file(s).")
 
-    def open_selected_file(self, event):
+    def open_selected_file(self, event=None):
         selected = self.tree.selection()
         if not selected:
             return
@@ -353,21 +422,55 @@ class FileSearchApp:
         if 'tags' not in item or not item['tags']:
             messagebox.showwarning("Error", "File path not available.")
             return
-
         filepath = item['tags'][0]
         if not os.path.exists(filepath):
             messagebox.showerror("Not Found", f"File does not exist:\n{filepath}")
             return
-
         try:
             if sys.platform == "win32":
-                os.startfile(filepath)  # Windows
+                os.startfile(filepath)
             elif sys.platform == "darwin":
-                os.system(f"open '{filepath}'")  # macOS
+                os.system(f"open '{filepath}'")
             else:
-                os.system(f"xdg-open '{filepath}'")  # Linux
+                os.system(f"xdg-open '{filepath}'")
         except Exception as e:
             messagebox.showerror("Open Failed", f"Could not open file:\n{str(e)}")
+
+    def open_file_location(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        item = self.tree.item(selected[0])
+        if 'tags' not in item or not item['tags']:
+            messagebox.showwarning("Error", "File path not available.")
+            return
+        filepath = item['tags'][0]
+        folder_path = os.path.dirname(filepath)
+        if not os.path.exists(folder_path):
+            messagebox.showerror("Not Found", f"Folder does not exist:\n{folder_path}")
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder_path)
+            elif sys.platform == "darwin":
+                os.system(f"open '{folder_path}'")
+            else:
+                os.system(f"xdg-open '{folder_path}'")
+        except Exception as e:
+            messagebox.showerror("Open Failed", f"Could not open folder:\n{str(e)}")
+
+    def copy_path_to_clipboard(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        item = self.tree.item(selected[0])
+        if 'tags' not in item or not item['tags']:
+            return
+        filepath = item['tags'][0]
+        self.root.clipboard_clear()
+        self.root.clipboard_append(filepath)
+        self.root.update()
+        messagebox.showinfo("Copied", "File path copied to clipboard!")
 
     def show_preview(self, event):
         self.preview_text.delete(1.0, tk.END)
@@ -376,21 +479,17 @@ class FileSearchApp:
             return
         item = self.tree.item(selected[0])
         filepath = item['tags'][0]
-
-        # Show file info
-        self.preview_text.insert(tk.END, f"📁 File: {os.path.basename(filepath)}\n")
-        self.preview_text.insert(tk.END, f"🔗 Path: {filepath}\n\n")
-
         result = next((r for r in self.results if r['path'] == filepath), None)
-        pattern = self.pattern_var.get().strip()
 
         if not result:
             self.preview_text.insert(tk.END, "⚠️ No data available.")
             return
 
+        self.preview_text.insert(tk.END, f"📁 File: {os.path.basename(filepath)}\n")
+        self.preview_text.insert(tk.END, f"🔗 Path: {filepath}\n\n")
+
         if not self.search_content_var.get():
-            self.preview_text.insert(tk.END, "ℹ️ Content search was not enabled during search.\n")
-            self.preview_text.insert(tk.END, "Enable 'Search in content' and re-run to see text.")
+            self.preview_text.insert(tk.END, "ℹ️ Content search was disabled. Re-run with 'Search in content' enabled.")
             return
 
         content = self.read_file_content(filepath)
@@ -398,16 +497,9 @@ class FileSearchApp:
             self.preview_text.insert(tk.END, f"❌ Could not read content:\n{content}")
             return
 
-        # Highlight matches
-        highlighted = self.highlight_text(content, pattern, self.regex_var.get(), self.case_sensitive_var.get())
-
-        # Truncate to context around first match
+        highlighted = self.highlight_text(content, self.pattern_var.get().strip(), self.regex_var.get(), self.case_sensitive_var.get())
         try:
-            match_pos = content.lower().find(pattern.lower())
-            if match_pos == -1:
-                self.preview_text.insert(tk.END, "🔤 No match found in content (possible encoding issue).")
-                return
-
+            match_pos = content.lower().find(self.pattern_var.get().strip().lower())
             start = max(0, match_pos - 100)
             end = min(len(content), match_pos + 300)
             snippet = highlighted[start:end]
@@ -423,7 +515,6 @@ class FileSearchApp:
         )
         if not filepath:
             return
-
         try:
             if filepath.endswith(".csv"):
                 with open(filepath, 'w', encoding='utf-8', newline='') as f:
@@ -435,9 +526,9 @@ class FileSearchApp:
                             r['path'],
                             r['size'],
                             datetime.fromtimestamp(r['mtime']).strftime("%Y-%m-%d %H:%M:%S"),
-                            r['snippet'][:500]  # Truncate long snippets
+                            r['snippet'][:500]
                         ])
-            else:  # .xlsx
+            else:
                 from openpyxl import Workbook
                 wb = Workbook()
                 ws = wb.active
@@ -452,7 +543,6 @@ class FileSearchApp:
                         r['snippet'][:500]
                     ])
                 wb.save(filepath)
-
             messagebox.showinfo("Export Success", f"Results saved to:\n{filepath}")
         except Exception as e:
             messagebox.showerror("Export Failed", f"Could not save file:\n{str(e)}")
